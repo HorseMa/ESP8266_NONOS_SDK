@@ -40,9 +40,63 @@
 #include "mem.h"
 #include "sntp.h"
 
+#define UART_BUFF_EN  0   //use uart buffer  , FOR UART0
+#define uart_recvTaskPrio        0
+#define uart_recvTaskQueueLen    10
+os_event_t    uart_recvTaskQueue[uart_recvTaskQueueLen];
 MQTT_Client mqttClient;
 typedef unsigned long u32_t;
 static ETSTimer sntp_timer;
+
+typedef enum{
+    enParseStateSync,
+    enParseStateLength,
+    enParseStatePayload,
+    enParseStateCheckSum
+}en_ParseState,*pen_ParseState;
+
+void hexdump(const unsigned char *buf, const int num)
+{
+    int i;
+    for(i = 0; i < num; i++)
+    {
+        INFO("%02X ", buf[i]);
+        /*if ((i+1)%8 == 0)
+            printf("\n");*/
+    }
+    INFO("\r\n");
+    return;
+}
+
+void TGAM_powerenable(void)
+{
+    gpio_output_set(BIT4, 0, BIT4, 0);
+}
+
+void TGAM_powerdisable(void)
+{
+    gpio_output_set(0, BIT4, BIT4, 0);
+}
+
+void buzzer_enable(void)
+{
+    gpio_output_set(BIT5, 0, BIT5, 0);
+}
+
+void buzzer_disable(void)
+{
+    gpio_output_set(0, BIT5, BIT5, 0);
+}
+
+void tgam_led_on(void)
+{
+    gpio_output_set(BIT14, 0, BIT14, 0);
+}
+
+void tgam_led_off(void)
+{
+    gpio_output_set(0, BIT14, BIT14, 0);
+}
 
 void sntpfn()
 {
@@ -81,6 +135,7 @@ void mqttConnectedCb(uint32_t *args)
     MQTT_Publish(client, "/mqtt/topic/0", "hello0", 6, 0, 0);
     MQTT_Publish(client, "/mqtt/topic/1", "hello1", 6, 1, 0);
     MQTT_Publish(client, "/mqtt/topic/2", "hello2", 6, 2, 0);
+    TGAM_powerenable();
 
 }
 
@@ -166,10 +221,162 @@ user_rf_cal_sector_set(void)
     return rf_cal_sec;
 }
 
+LOCAL void ICACHE_FLASH_ATTR ///////
+uart_recvTask(os_event_t *events)
+{
+    static en_ParseState enParseState = enParseStateSync;
+    static u16 syncword = 0;
+    static u16 length = 0,index = 0;
+    static u8 payload[256] = {0};
+    static u32 checksum = 0,checksumtmp = 0;
+    //static cJSON *root = NULL,*rawarray = NULL;
+    static rawcnt = 0;
+    static u8 *text;
+
+    if(events->sig == 0){
+    #if  UART_BUFF_EN
+        Uart_rx_buff_enq();
+    #else
+        uint8 fifo_len = (READ_PERI_REG(UART_STATUS(UART0))>>UART_RXFIFO_CNT_S)&UART_RXFIFO_CNT;
+        uint8 d_tmp = 0;
+        uint8 idx=0;
+        for(idx=0;idx<fifo_len;idx++) {
+            d_tmp = READ_PERI_REG(UART_FIFO(UART0)) & 0xFF;
+            switch(enParseState)
+            {
+                case enParseStateSync:
+                    syncword = syncword << 8;
+                    syncword = syncword | d_tmp;
+                    if(syncword == 0xAAAA)
+                    {
+                        enParseState = enParseStateLength;
+                    }
+                    break;
+                case enParseStateLength:
+                    length = d_tmp;
+                    index = 0;
+                    enParseState = enParseStatePayload;
+                    break;
+                case enParseStatePayload:
+                    payload[index ++] = d_tmp;
+                    if(index >= length)
+                    {
+                        enParseState = enParseStateCheckSum;
+                    }
+                    break;
+                case enParseStateCheckSum:
+                    checksum = d_tmp;
+                    checksumtmp = 0;
+                    for(index = 0;index < length;index ++)
+                    {
+                        checksumtmp += payload[index];
+                    }
+                    checksumtmp = (checksumtmp ^ 0xFFFFFFFF) & 0xFF;
+                    if(checksum == checksumtmp)
+                    {/*
+                        if (!root)
+                        {
+                            root =  cJSON_CreateObject();
+                            cJSON_AddNumberToObject(root, "Chip_ID", system_get_chip_id());
+                            cJSON_AddItemToObject(root, "Raw Data", rawarray = cJSON_CreateArray());
+                            printf("free heap size :%d\r\n", system_get_free_heap_size());
+                        }
+                        if(length == 0x20)
+                        {
+                            if(payload[0] == 0x02)
+                            {
+                                cJSON_AddNumberToObject(root, "Poor_Signal", (payload[1] & 0xFF));
+                            }
+                            if((payload[2] == 0x83) && (payload[3] == 0x18))
+                            {
+                                cJSON_AddNumberToObject(root, "Delta", ((u32)payload[4] << 16) | ((u32)payload[5] << 8) | ((u32)payload[6] << 0));
+                                cJSON_AddNumberToObject(root, "Theta", ((u32)payload[7] << 16) | ((u32)payload[8] << 8) | ((u32)payload[9] << 0));
+                                cJSON_AddNumberToObject(root, "LowAlpha", ((u32)payload[10] << 16) | ((u32)payload[11] << 8) | ((u32)payload[12] << 0));
+                                cJSON_AddNumberToObject(root, "HighAlpha", ((u32)payload[13] << 16) | ((u32)payload[14] << 8) | ((u32)payload[15] << 0));
+                                cJSON_AddNumberToObject(root, "LowBeta", ((u32)payload[16] << 16) | ((u32)payload[17] << 8) | ((u32)payload[18] << 0));
+                                cJSON_AddNumberToObject(root, "HighBeta", ((u32)payload[19] << 16) | ((u32)payload[20] << 8) | ((u32)payload[21] << 0));
+                                cJSON_AddNumberToObject(root, "LowGamma", ((u32)payload[22] << 16) | ((u32)payload[23] << 8) | ((u32)payload[24] << 0));
+                                cJSON_AddNumberToObject(root, "MiddleGamma", ((u32)payload[25] << 16) | ((u32)payload[26] << 8) | ((u32)payload[27] << 0));
+                            }
+                            if(payload[28] == 0x04)
+                            {
+                                cJSON_AddNumberToObject(root, "Attention", (payload[29] & 0xFF));
+                            }
+                            if(payload[30] == 0x05)
+                            {
+                                cJSON_AddNumberToObject(root, "Meditation", (payload[31] & 0xFF));
+                            }
+
+                            xSemaphoreTake( MQTTpubSemaphore, portMAX_DELAY );
+                            message.qos = QOS0;
+                            message.retained = 0;
+                            memset(mqtt_payload,0,1024 * 2);
+                            message.payload = mqtt_payload;
+                            strcpy(mqtt_payload, text = cJSON_Print(root));
+                            free(text);
+                            cJSON_Delete(root);
+                            message.payloadlen = strlen(mqtt_payload);
+                            printf("%s, %d\r\n",mqtt_payload,rawcnt);
+                            xSemaphoreGive( MQTTpubSemaphore );
+                            vTaskResume(mqttc_client_handle);
+                            root = NULL;
+                            rawcnt = 0;
+                            rawarray = NULL;
+                        }
+                        else if(length == 0x04)
+                        {
+                            if((payload[0] == 0x80) && (payload[1] == 0x02))
+                            {
+                                if(rawcnt % 2)
+                                {
+                                    cJSON_AddItemToArray(rawarray,cJSON_CreateNumber(((short) (( payload[2] << 8 ) | payload[3]))));
+                                }
+                                rawcnt ++;
+                            }
+                            else
+                            {
+                                printf("format error\r\n");
+                            }
+
+                        }
+                        else
+                        {
+                            printf("format error\r\n");
+                        }*/
+                        hexdump(payload,length);
+                    }
+                    else
+                    {
+                        INFO("Checksum error\r\n");
+                    }
+                    enParseState = enParseStateSync;
+                    syncword = 0;
+                    break;
+                default:
+                    enParseState = enParseStateSync;
+                    syncword = 0;
+                    break;
+            }
+            //uart_tx_one_char(UART0, d_tmp);
+            //INFO("%02x\r\n",d_tmp);
+        }
+        WRITE_PERI_REG(UART_INT_CLR(UART0), UART_RXFIFO_FULL_INT_CLR|UART_RXFIFO_TOUT_INT_CLR);
+        uart_rx_intr_enable(UART0);
+    #endif
+    }else if(events->sig == 1){
+    #if UART_BUFF_EN
+     //already move uart buffer output to uart empty interrupt
+        //tx_start_uart_buffer(UART0);
+    #else
+
+    #endif
+    }
+}
 
 void user_init(void)
 {
     uart_init(BIT_RATE_57600, BIT_RATE_115200);
+    system_os_task(uart_recvTask, uart_recvTaskPrio, uart_recvTaskQueue, uart_recvTaskQueueLen);
     UART_SetPrintPort(1);
     os_delay_us(60000);
 
