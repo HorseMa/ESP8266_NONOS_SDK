@@ -17,9 +17,9 @@ typedef enum{
 
 #define MQTT_HOST            "www.colt.xin" // the IP address or domain name of your MQTT server or MQTT broker ,such as "mqtt.yourdomain.com"
 #define MQTT_PORT            1883    // the listening port of your MQTT server or MQTT broker
-#define MQTT_CLIENT_ID        "ESTACK_TGAM"    // the ID of yourself, any string is OK,client would use this ID register itself to MQTT server
-#define MQTT_USER            "Device_Name" // your MQTT login name, if MQTT server allow anonymous login,any string is OK, otherwise, please input valid login name which you had registered
-#define MQTT_PASS            "Device_Passwd" // you MQTT login password, same as above
+#define MQTT_CLIENT_ID        "EstackTGAM"    // the ID of yourself, any string is OK,client would use this ID register itself to MQTT server
+#define MQTT_USER            "EstackTGAM" // your MQTT login name, if MQTT server allow anonymous login,any string is OK, otherwise, please input valid login name which you had registered
+#define MQTT_PASS            "EstackTGAM" // you MQTT login password, same as above
 #define STA_SSID "1802"    // your AP/router SSID to config your device networking
 #define STA_PASS "18021802" // your AP/router password
 
@@ -32,13 +32,13 @@ typedef enum{
 
 /*Please Keep the following configuration if you have no very deep understanding of ESP SSL/TLS*/
 #define CFG_LOCATION    0x79    /* Please don't change or if you know what you doing */
-#define MQTT_BUF_SIZE        1024
+#define MQTT_BUF_SIZE        (1024 * 2)
 #define MQTT_KEEPALIVE        120     /*second*/
 #define MQTT_RECONNECT_TIMEOUT     5    /*second*/
 #define MQTT_SSL_ENABLE //* Please don't change or if you know what you doing */
 
 #define STA_TYPE AUTH_WPA2_PSK
-#define QUEUE_BUFFER_SIZE                 2048
+#define QUEUE_BUFFER_SIZE                 (2048 * 4)
 
 #define PROTOCOL_NAMEv31    /*MQTT version 3.1 compatible with Mosquitto v0.15*/
 //PROTOCOL_NAMEv311            /*MQTT version 3.11 compatible with https://eclipse.org/paho/clients/testing/*/

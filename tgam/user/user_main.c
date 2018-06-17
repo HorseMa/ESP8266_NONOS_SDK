@@ -39,12 +39,14 @@
 #include "user_interface.h"
 #include "mem.h"
 #include "sntp.h"
+#include "cJSON.h"
 
 #define UART_BUFF_EN  0   //use uart buffer  , FOR UART0
 #define uart_recvTaskPrio        0
-#define uart_recvTaskQueueLen    10
+#define uart_recvTaskQueueLen    255
 os_event_t    uart_recvTaskQueue[uart_recvTaskQueueLen];
 MQTT_Client mqttClient;
+MQTT_Client *mqtt_pub_Client;
 typedef unsigned long u32_t;
 static ETSTimer sntp_timer;
 
@@ -128,13 +130,14 @@ void mqttConnectedCb(uint32_t *args)
 {
     MQTT_Client* client = (MQTT_Client*)args;
     INFO("MQTT: Connected\r\n");
-    MQTT_Subscribe(client, "/mqtt/topic/0", 0);
-    MQTT_Subscribe(client, "/mqtt/topic/1", 1);
-    MQTT_Subscribe(client, "/mqtt/topic/2", 2);
+    mqtt_pub_Client = client;
+    //MQTT_Subscribe(client, "/mqtt/topic/0", 0);
+    //MQTT_Subscribe(client, "/mqtt/topic/1", 1);
+    //MQTT_Subscribe(client, "/mqtt/topic/2", 2);
 
-    MQTT_Publish(client, "/mqtt/topic/0", "hello0", 6, 0, 0);
-    MQTT_Publish(client, "/mqtt/topic/1", "hello1", 6, 1, 0);
-    MQTT_Publish(client, "/mqtt/topic/2", "hello2", 6, 2, 0);
+    //MQTT_Publish(client, "/mqtt/topic/0", "hello0", 6, 0, 0);
+    //MQTT_Publish(client, "/mqtt/topic/1", "hello1", 6, 1, 0);
+    //MQTT_Publish(client, "/mqtt/topic/2", "hello2", 6, 2, 0);
     TGAM_powerenable();
 
 }
@@ -229,9 +232,10 @@ uart_recvTask(os_event_t *events)
     static u16 length = 0,index = 0;
     static u8 payload[256] = {0};
     static u32 checksum = 0,checksumtmp = 0;
-    //static cJSON *root = NULL,*rawarray = NULL;
+    static cJSON *root = NULL,*rawarray = NULL;
     static rawcnt = 0;
     static u8 *text;
+    static u8 mqtt_payload[1024 * 2];
 
     if(events->sig == 0){
     #if  UART_BUFF_EN
@@ -273,13 +277,12 @@ uart_recvTask(os_event_t *events)
                     }
                     checksumtmp = (checksumtmp ^ 0xFFFFFFFF) & 0xFF;
                     if(checksum == checksumtmp)
-                    {/*
+                    {
                         if (!root)
                         {
                             root =  cJSON_CreateObject();
                             cJSON_AddNumberToObject(root, "Chip_ID", system_get_chip_id());
                             cJSON_AddItemToObject(root, "Raw Data", rawarray = cJSON_CreateArray());
-                            printf("free heap size :%d\r\n", system_get_free_heap_size());
                         }
                         if(length == 0x20)
                         {
@@ -307,18 +310,13 @@ uart_recvTask(os_event_t *events)
                                 cJSON_AddNumberToObject(root, "Meditation", (payload[31] & 0xFF));
                             }
 
-                            xSemaphoreTake( MQTTpubSemaphore, portMAX_DELAY );
-                            message.qos = QOS0;
-                            message.retained = 0;
                             memset(mqtt_payload,0,1024 * 2);
-                            message.payload = mqtt_payload;
                             strcpy(mqtt_payload, text = cJSON_Print(root));
-                            free(text);
+                            os_free(text);
                             cJSON_Delete(root);
-                            message.payloadlen = strlen(mqtt_payload);
-                            printf("%s, %d\r\n",mqtt_payload,rawcnt);
-                            xSemaphoreGive( MQTTpubSemaphore );
-                            vTaskResume(mqttc_client_handle);
+                            INFO("rawcnt = %d\r\n",rawcnt);
+                            MQTT_Publish(mqtt_pub_Client, "Estack/TGAM/pub", mqtt_payload, strlen(mqtt_payload), 0, 0);
+
                             root = NULL;
                             rawcnt = 0;
                             rawarray = NULL;
@@ -335,15 +333,15 @@ uart_recvTask(os_event_t *events)
                             }
                             else
                             {
-                                printf("format error\r\n");
+                                INFO("format error\r\n");
                             }
 
                         }
                         else
                         {
-                            printf("format error\r\n");
-                        }*/
-                        hexdump(payload,length);
+                            INFO("format error\r\n");
+                        }
+                        //hexdump(payload,length);
                     }
                     else
                     {
