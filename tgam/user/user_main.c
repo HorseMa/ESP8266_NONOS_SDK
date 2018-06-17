@@ -40,6 +40,7 @@
 #include "mem.h"
 #include "sntp.h"
 #include "cJSON.h"
+#include "driver/key.h"
 
 #define UART_BUFF_EN  0   //use uart buffer  , FOR UART0
 #define uart_recvTaskPrio        0
@@ -49,6 +50,24 @@ MQTT_Client mqttClient;
 MQTT_Client *mqtt_pub_Client;
 typedef unsigned long u32_t;
 static ETSTimer sntp_timer;
+
+#define SENSOR_KEY_NUM    1
+
+#define SENSOR_KEY_IO_MUX     PERIPHS_IO_MUX_MTCK_U
+#define SENSOR_KEY_IO_NUM     12
+#define SENSOR_KEY_IO_FUNC    FUNC_GPIO12
+
+#define SENSOR_LINK_LED_IO_MUX     PERIPHS_IO_MUX_MTMS_U
+#define SENSOR_LINK_LED_IO_NUM     14
+#define SENSOR_LINK_LED_IO_FUNC    FUNC_GPIO14
+#define SENSOR_DEEP_SLEEP_TIME    30000000
+
+LOCAL struct keys_param keys;
+LOCAL struct single_key_param *single_key[SENSOR_KEY_NUM];
+LOCAL os_timer_t sensor_sleep_timer;
+LOCAL os_timer_t link_led_timer;
+LOCAL uint8 link_led_level = 0;
+LOCAL uint32 link_start_time;
 
 typedef enum{
     enParseStateSync,
@@ -72,6 +91,7 @@ void hexdump(const unsigned char *buf, const int num)
 
 void TGAM_powerenable(void)
 {
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO4_U, FUNC_GPIO4);
     gpio_output_set(BIT4, 0, BIT4, 0);
 }
 
@@ -125,12 +145,14 @@ void wifiConnectCb(uint8_t status)
           MQTT_Disconnect(&mqttClient);
     }
 }
-
+void ICACHE_FLASH_ATTR
+user_link_led_timer_done(void);
 void mqttConnectedCb(uint32_t *args)
 {
     MQTT_Client* client = (MQTT_Client*)args;
     INFO("MQTT: Connected\r\n");
     mqtt_pub_Client = client;
+    user_link_led_timer_done();
     //MQTT_Subscribe(client, "/mqtt/topic/0", 0);
     //MQTT_Subscribe(client, "/mqtt/topic/1", 1);
     //MQTT_Subscribe(client, "/mqtt/topic/2", 2);
@@ -371,8 +393,136 @@ uart_recvTask(os_event_t *events)
     }
 }
 
+/******************************************************************************
+ * FunctionName : user_humiture_long_press
+ * Description  : humiture key's function, needed to be installed
+ * Parameters   : none
+ * Returns      : none
+*******************************************************************************/
+LOCAL void ICACHE_FLASH_ATTR
+user_sensor_long_press(void)
+{
+    INFO("key press\r\n");
+    TGAM_powerdisable();
+    //user_esp_platform_set_active(0);
+    //system_restore();
+    system_restart();
+    while(1);
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+user_link_led_init(void)
+{
+    PIN_FUNC_SELECT(SENSOR_LINK_LED_IO_MUX, SENSOR_LINK_LED_IO_FUNC);
+}
+
+void ICACHE_FLASH_ATTR
+user_link_led_output(uint8 level)
+{
+    GPIO_OUTPUT_SET(GPIO_ID_PIN(SENSOR_LINK_LED_IO_NUM), level);
+}
+
+LOCAL void ICACHE_FLASH_ATTR
+user_link_led_timer_cb(void)
+{
+    link_led_level = (~link_led_level) & 0x01;
+    GPIO_OUTPUT_SET(GPIO_ID_PIN(SENSOR_LINK_LED_IO_NUM), link_led_level);
+}
+
+void ICACHE_FLASH_ATTR
+user_link_led_timer_init(void)
+{
+    link_start_time = system_get_time();
+
+    os_timer_disarm(&link_led_timer);
+    os_timer_setfn(&link_led_timer, (os_timer_func_t *)user_link_led_timer_cb, NULL);
+    os_timer_arm(&link_led_timer, 50, 1);
+    link_led_level = 0;
+    GPIO_OUTPUT_SET(GPIO_ID_PIN(SENSOR_LINK_LED_IO_NUM), link_led_level);
+}
+
+void ICACHE_FLASH_ATTR
+user_link_led_timer_done(void)
+{
+    os_timer_disarm(&link_led_timer);
+    GPIO_OUTPUT_SET(GPIO_ID_PIN(SENSOR_LINK_LED_IO_NUM), 1);
+}
+
+#define FPM_SLEEP_MAX_TIME 0xFFFFFFF
+void fpm_wakup_cb_func1(void)
+{
+    buzzer_enable();
+    os_delay_us(60000);
+    buzzer_disable();
+
+    wifi_fpm_close();
+    wifi_set_opmode(STATION_MODE);
+    wifi_station_connect();
+
+    os_delay_us(500000);
+    single_key[0] = key_init_single(SENSOR_KEY_IO_NUM, SENSOR_KEY_IO_MUX, SENSOR_KEY_IO_FUNC,
+                                        user_sensor_long_press, user_sensor_long_press);
+
+    keys.key_num = SENSOR_KEY_NUM;
+    keys.single_key = single_key;
+
+    key_init(&keys);
+
+    /*if (GPIO_INPUT_GET(GPIO_ID_PIN(SENSOR_KEY_IO_NUM)) == 0) {
+        user_sensor_long_press();
+    }*/
+    #if 0
+    //wifi_fpm_close();
+    //wifi_set_opmode(STATION_MODE);
+    //wifi_station_connect();
+    // disable force sleep function  // set station mode 
+    // connect to AP 
+    #endif
+}
+
+void ICACHE_FLASH_ATTR
+user_sensor_deep_sleep_enter(void)
+{
+    system_deep_sleep(SENSOR_DEEP_SLEEP_TIME > link_start_time \
+    ? SENSOR_DEEP_SLEEP_TIME - link_start_time : 30000000);
+}
+
+void ICACHE_FLASH_ATTR
+user_sensor_deep_sleep_disable(void)
+{
+    os_timer_disarm(&sensor_sleep_timer);
+}
+
+void ICACHE_FLASH_ATTR
+user_sensor_deep_sleep_init(uint32 time)
+{
+    os_timer_disarm(&sensor_sleep_timer);
+    os_timer_setfn(&sensor_sleep_timer, (os_timer_func_t *)user_sensor_deep_sleep_enter, NULL);
+    os_timer_arm(&sensor_sleep_timer, time, 0);
+}
+
 void user_init(void)
 {
+    wifi_station_disconnect();
+    wifi_set_opmode(NULL_MODE);
+    wifi_fpm_set_sleep_type(LIGHT_SLEEP_T);
+    wifi_fpm_open(); // enable force sleep
+    PIN_FUNC_SELECT(PERIPHS_IO_MUX_MTDI_U, FUNC_GPIO12);
+    wifi_enable_gpio_wakeup(12, GPIO_PIN_INTR_LOLEVEL);
+    // Set wakeup callback  
+
+    wifi_fpm_set_wakeup_cb(fpm_wakup_cb_func1);
+    buzzer_enable();
+    os_delay_us(60000);
+    buzzer_disable();
+    os_delay_us(200000);
+    buzzer_enable();
+    os_delay_us(60000);
+    buzzer_disable();
+    wifi_fpm_do_sleep(FPM_SLEEP_MAX_TIME);
+    user_link_led_init();
+    user_link_led_timer_init();
+
     uart_init(BIT_RATE_57600, BIT_RATE_115200);
     system_os_task(uart_recvTask, uart_recvTaskPrio, uart_recvTaskQueue, uart_recvTaskQueueLen);
     UART_SetPrintPort(1);
