@@ -164,16 +164,20 @@ void mqttConnectedCb(uint32_t *args)
 
 }
 
+void ICACHE_FLASH_ATTR
+user_link_led_timer_init(void);
 void mqttDisconnectedCb(uint32_t *args)
 {
     MQTT_Client* client = (MQTT_Client*)args;
     INFO("MQTT: Disconnected\r\n");
+    user_link_led_timer_init();
 }
 
 void mqttPublishedCb(uint32_t *args)
 {
     MQTT_Client* client = (MQTT_Client*)args;
     INFO("MQTT: Published\r\n");
+    TGAM_powerenable();
 }
 
 void mqttDataCb(uint32_t *args, const char* topic, uint32_t topic_len, const char *data, uint32_t data_len)
@@ -304,6 +308,9 @@ uart_recvTask(os_event_t *events)
                         {
                             root =  cJSON_CreateObject();
                             cJSON_AddNumberToObject(root, "Chip_ID", system_get_chip_id());
+                            uint32 adc_value = system_adc_read();
+                            INFO("adc_value = %d\r\n",adc_value);
+                            cJSON_AddNumberToObject(root, "Battery", (adc_value * 1000  * (340/10)/ 1024));
                             cJSON_AddItemToObject(root, "Raw Data", rawarray = cJSON_CreateArray());
                         }
                         if(length == 0x20)
@@ -337,7 +344,10 @@ uart_recvTask(os_event_t *events)
                             os_free(text);
                             cJSON_Delete(root);
                             INFO("rawcnt = %d\r\n",rawcnt);
-                            MQTT_Publish(mqtt_pub_Client, "Estack/TGAM/pub", mqtt_payload, strlen(mqtt_payload), 0, 0);
+                            if(!MQTT_Publish(mqtt_pub_Client, "Estack/TGAM/pub", mqtt_payload, strlen(mqtt_payload), 0, 0))
+                            {
+                                TGAM_powerdisable();
+                            }
 
                             root = NULL;
                             rawcnt = 0;
